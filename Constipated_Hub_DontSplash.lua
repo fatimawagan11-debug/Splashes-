@@ -1,16 +1,12 @@
 --[[
 	Constipated Hub | DON'T SPLASH
-	UI: ZetaPro
-	Features: Brandon ESP (open) + full Nauru Hub feature set (rebuilt)
-	Nauru list: Auto Bleed Out, Water Platform, Anti Slow Water, Auto Pull,
-	Auto Ask Help, Flare Aimbot, Auto Throw Flare, Get Nearest Pebbles,
-	Creature Proximity Alert, Equip Best, Open Equipment/Shop UI,
-	Camera Mode, Timer Size, Return Lobby, full ESP suite
+	UI: Orion Lib
+	Remotes: StillWater (in-game) + StillWaterLobby (lobby)
 ]]
 
 repeat task.wait() until game:IsLoaded()
 
-local Zeta = loadstring(game:HttpGet("https://raw.githubusercontent.com/realkalii/ZetaPro/main/src/init.luau"))()
+local OrionLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/jensonhirst/Orion/main/source"))()
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -40,18 +36,78 @@ end
 local GENV = (typeof(getgenv) == "function" and getgenv()) or _G
 GENV.__ConstipatedDS = (GENV.__ConstipatedDS or 0) + 1
 local GEN = GENV.__ConstipatedDS
-local function alive() return GENV.__ConstipatedDS == GEN end
+local function alive()
+	return GENV.__ConstipatedDS == GEN
+end
+
+-- ===================== REMOTES =====================
+local function path(root, ...)
+	local cur = root
+	for _, name in ipairs({ ... }) do
+		if not cur then return nil end
+		cur = cur:FindFirstChild(name)
+	end
+	return cur
+end
+
+local Remotes = {}
+local function refreshRemotes()
+	local SW = path(ReplicatedStorage, "StillWater", "Remotes")
+	local Lobby = path(ReplicatedStorage, "StillWaterLobby", "Remotes")
+	Remotes.BleedOut = SW and SW:FindFirstChild("BleedOut")
+	Remotes.AskForHelp = SW and SW:FindFirstChild("AskForHelp")
+	Remotes.SelfRescue = SW and SW:FindFirstChild("SelfRescue")
+	Remotes.RescueHold = SW and SW:FindFirstChild("RescueHold")
+	Remotes.UseItem = SW and SW:FindFirstChild("UseItem")
+	Remotes.FriendRevive = SW and SW:FindFirstChild("FriendRevive")
+	Remotes.ReturnToLobby = SW and SW:FindFirstChild("ReturnToLobby")
+	Remotes.PlayAgain = SW and SW:FindFirstChild("PlayAgain")
+	Remotes.Photo = SW and SW:FindFirstChild("Photo")
+	Remotes.ShopAction = (SW and SW:FindFirstChild("ShopAction")) or (Lobby and Lobby:FindFirstChild("ShopAction"))
+	Remotes.Push = SW and SW:FindFirstChild("Push")
+	Remotes.Msg = SW and SW:FindFirstChild("Msg")
+	Remotes.MemStep = SW and SW:FindFirstChild("MemStep")
+	Remotes.RequestRescuePurchase = SW and SW:FindFirstChild("RequestRescuePurchase")
+	Remotes.RescuePurchaseClosed = SW and SW:FindFirstChild("RescuePurchaseClosed")
+	Remotes.DoubleCoins = SW and SW:FindFirstChild("DoubleCoins")
+	Remotes.GiveCoins = (SW and SW:FindFirstChild("GiveCoins")) or (Lobby and Lobby:FindFirstChild("GiveCoins"))
+	Remotes.SetStat = (SW and SW:FindFirstChild("SetStat")) or (Lobby and Lobby:FindFirstChild("SetStat"))
+	Remotes.AddCurrency = (SW and SW:FindFirstChild("AddCurrency")) or (Lobby and Lobby:FindFirstChild("AddCurrency"))
+	Remotes.UnlockAll = (SW and SW:FindFirstChild("UnlockAll")) or (Lobby and Lobby:FindFirstChild("UnlockAll"))
+	Remotes.OpenPanel = Lobby and Lobby:FindFirstChild("OpenPanel")
+	Remotes.PartyAction = Lobby and Lobby:FindFirstChild("PartyAction")
+	Remotes.SaveSettings = Lobby and Lobby:FindFirstChild("SaveSettings")
+	Remotes.ClaimGroupReward = Lobby and Lobby:FindFirstChild("ClaimGroupReward")
+end
+refreshRemotes()
+task.spawn(function()
+	while alive() do
+		refreshRemotes()
+		task.wait(3)
+	end
+end)
+
+local function fire(r, ...)
+	if not r then return false end
+	local ok = pcall(function(...)
+		if r:IsA("RemoteEvent") then
+			r:FireServer(...)
+		elseif r:IsA("RemoteFunction") then
+			r:InvokeServer(...)
+		end
+	end, ...)
+	return ok
+end
 
 -- ===================== FLAGS =====================
 local F = {
-	-- Survival
 	WaterPlatform = false,
 	AntiSlowWater = false,
 	AutoBleedOut = false,
-	AutoPull = false,
 	AutoAskHelp = false,
+	AutoSelfRescue = false,
+	AutoPull = false,
 	AutoSprint = false,
-	-- Combat / tools
 	FlareAimbot = false,
 	AutoThrowFlare = false,
 	GetNearestPebbles = false,
@@ -61,20 +117,18 @@ local F = {
 	FlareSmooth = 0.35,
 	AlertRadius = 40,
 	CreatureAlert = false,
-	-- ESP
 	EspPlayers = false,
 	EspMonster = false,
 	EspItems = false,
 	EspPlatforms = false,
 	EspVaults = false,
 	EspCode = false,
-	-- Visual
 	FullBright = false,
 	NoFog = false,
-	CameraMode = false, -- 3rd person nudge
-	TimerScale = 1,
+	CameraMode = false,
 }
 
+-- ===================== HELPERS =====================
 local marksFolder = Workspace:FindFirstChild("Constipated_DS_Marks")
 if marksFolder then marksFolder:Destroy() end
 marksFolder = Instance.new("Folder")
@@ -82,7 +136,6 @@ marksFolder.Name = "Constipated_DS_Marks"
 marksFolder.Parent = Workspace
 
 local tagged, platformAdorns, vaultLabels = {}, {}, {}
-
 local monsterWords = { "monster", "creature", "entity", "beast", "hunter", "locust" }
 local itemWords = { "pebble", "rock", "bottle", "flare", "battery", "key", "tool", "pickup", "collectible", "rope", "toy" }
 local platformWords = { "platform", "pad", "tile", "step", "sinking", "spinner", "spinplatform", "collapse", "temporary" }
@@ -238,9 +291,7 @@ end
 local function equipTool(tool)
 	if not tool then return end
 	local hum = getHum()
-	if hum then
-		pcall(function() hum:EquipTool(tool) end)
-	end
+	if hum then pcall(function() hum:EquipTool(tool) end) end
 end
 
 local function firePrompt(prompt)
@@ -256,7 +307,7 @@ local function firePrompt(prompt)
 	end)
 end
 
--- ===================== WATER PLATFORM (Nauru) =====================
+-- ===================== LOOPS =====================
 local ghostPart
 local function ensureGhost()
 	if ghostPart and ghostPart.Parent then return ghostPart end
@@ -287,93 +338,59 @@ task.spawn(function()
 	end
 end)
 
--- Anti slow in water
 task.spawn(function()
 	while alive() do
 		if F.AntiSlowWater then
 			local hum = getHum()
-			if hum and hum.WalkSpeed < 16 then
-				hum.WalkSpeed = 16
-			end
+			if hum and hum.WalkSpeed < 16 then hum.WalkSpeed = 16 end
 		end
-		task.wait(0.15)
-	end
-end)
-
--- Auto sprint
-task.spawn(function()
-	while alive() do
 		if F.AutoSprint then
 			local hum = getHum()
-			if hum and hum.WalkSpeed < 22 then
-				hum.WalkSpeed = 22
-			end
+			if hum and hum.WalkSpeed < 22 then hum.WalkSpeed = 22 end
 		end
-		task.wait(0.25)
+		task.wait(0.2)
 	end
 end)
-
--- ===================== AUTO BLEED OUT / HELP / PULL =====================
--- Best-effort: fire common remote names / prompts near downed players
-local function tryRemote(names, ...)
-	for _, folder in ipairs({ ReplicatedStorage, Workspace, LP }) do
-		for _, desc in ipairs(folder:GetDescendants()) do
-			if desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction") then
-				local n = string.lower(desc.Name)
-				for _, want in ipairs(names) do
-					if n:find(want, 1, true) then
-						pcall(function()
-							if desc:IsA("RemoteEvent") then
-								desc:FireServer(...)
-							else
-								desc:InvokeServer(...)
-							end
-						end)
-						return true
-					end
-				end
-			end
-		end
-	end
-	return false
-end
 
 task.spawn(function()
 	while alive() do
 		if F.AutoBleedOut then
-			-- when near death / in water long: try bleed / give up remotes
-			tryRemote({ "bleed", "giveup", "surrender", "die", "bleedout" })
+			fire(Remotes.BleedOut)
 		end
 		if F.AutoAskHelp then
-			tryRemote({ "askhelp", "help", "callhelp", "requesthelp", "sos" })
+			fire(Remotes.AskForHelp)
+		end
+		if F.AutoSelfRescue then
+			fire(Remotes.SelfRescue)
 		end
 		if F.AutoPull then
+			fire(Remotes.RescueHold)
 			local hrp = getHRP()
 			if hrp then
 				for _, p in ipairs(Players:GetPlayers()) do
-					if p ~= LP and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-						local d = (p.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
-						if d < 25 then
-							-- rope / pull prompts
-							for _, desc in ipairs(p.Character:GetDescendants()) do
-								if desc:IsA("ProximityPrompt") then
-									local t = string.lower((desc.ActionText or "") .. (desc.ObjectText or ""))
+					if p ~= LP and p.Character then
+						local phr = p.Character:FindFirstChild("HumanoidRootPart")
+						if phr and (phr.Position - hrp.Position).Magnitude < 30 then
+							fire(Remotes.FriendRevive, p)
+							fire(Remotes.FriendRevive, p.UserId)
+							fire(Remotes.FriendRevive, p.Name)
+							for _, d in ipairs(p.Character:GetDescendants()) do
+								if d:IsA("ProximityPrompt") then
+									local t = string.lower((d.ActionText or "") .. (d.ObjectText or ""))
 									if t:find("pull", 1, true) or t:find("rescue", 1, true) or t:find("rope", 1, true) then
-										firePrompt(desc)
+										firePrompt(d)
 									end
 								end
 							end
-							tryRemote({ "pull", "rescue", "rope", "saveteammate" }, p)
 						end
 					end
 				end
 			end
 		end
-		task.wait(0.35)
+		task.wait(0.4)
 	end
 end)
 
--- ===================== FLARE AIMBOT + AUTO THROW =====================
 local function aimAt(pos)
 	if not Camera then return end
 	local origin = Camera.CFrame.Position
@@ -396,21 +413,17 @@ task.spawn(function()
 					local dist = (part.Position - hrp.Position).Magnitude
 					if dist <= F.FlareMaxRange then
 						local aimPos = part.Position
-						if F.AimDown then
-							aimPos = aimPos + Vector3.new(0, -2, 0) -- water near feet
-						end
-						if F.FlareAimbot then
-							aimAt(aimPos)
-						end
+						if F.AimDown then aimPos = aimPos + Vector3.new(0, -2, 0) end
+						if F.FlareAimbot then aimAt(aimPos) end
 						if F.AutoThrowFlare then
 							local flare = findTool({ "flare" })
 							if flare then
 								equipTool(flare)
 								task.wait(0.05)
-								pcall(function()
-									flare:Activate()
-								end)
-								-- also try mouse click via VIM
+								fire(Remotes.UseItem, "Flare")
+								fire(Remotes.UseItem, flare.Name)
+								fire(Remotes.UseItem)
+								pcall(function() flare:Activate() end)
 								pcall(function()
 									VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
 									VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
@@ -425,7 +438,6 @@ task.spawn(function()
 	end
 end)
 
--- Get nearest pebbles
 task.spawn(function()
 	while alive() do
 		if F.GetNearestPebbles then
@@ -441,9 +453,7 @@ task.spawn(function()
 							or (inst:FindFirstChildWhichIsA("BasePart") and inst:FindFirstChildWhichIsA("BasePart").Position)
 						if pos then
 							local d = (pos - hrp.Position).Magnitude
-							if d < bestD and d < 80 then
-								bestD, best = d, inst
-							end
+							if d < bestD and d < 80 then bestD, best = d, inst end
 						end
 					end
 				end
@@ -451,14 +461,10 @@ task.spawn(function()
 					local pos = best:IsA("BasePart") and best.Position
 						or (best.PrimaryPart and best.PrimaryPart.Position)
 						or best:FindFirstChildWhichIsA("BasePart").Position
-					-- walk toward / touch
-					pcall(function()
-						hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
-					end)
+					pcall(function() hrp.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end)
 					for _, d in ipairs(best:GetDescendants()) do
 						if d:IsA("ProximityPrompt") then firePrompt(d) end
 					end
-					if best:IsA("ProximityPrompt") then firePrompt(best) end
 				end
 			end
 		end
@@ -466,30 +472,19 @@ task.spawn(function()
 	end
 end)
 
--- Equip best item (prefer flare > rope > bottle > pebble)
 task.spawn(function()
 	while alive() do
 		if F.EquipBest then
-			local order = {
-				{ "flare" },
-				{ "rope", "rescue" },
-				{ "bottle" },
-				{ "pebble", "rock" },
-				{ "toy" },
-			}
+			local order = { { "flare" }, { "rope", "rescue" }, { "bottle" }, { "pebble", "rock" }, { "toy" } }
 			for _, names in ipairs(order) do
 				local t = findTool(names)
-				if t then
-					equipTool(t)
-					break
-				end
+				if t then equipTool(t) break end
 			end
 		end
 		task.wait(1)
 	end
 end)
 
--- Creature proximity alert
 local lastAlert = 0
 task.spawn(function()
 	while alive() do
@@ -509,7 +504,11 @@ task.spawn(function()
 								Duration = 2,
 							})
 						end)
-						Zeta:Notify({ Title = "Creature Alert", Content = string.format("%.0f studs", d), Duration = 2 })
+						OrionLib:MakeNotification({
+							Name = "Creature Alert",
+							Content = string.format("%.0f studs", d),
+							Time = 2,
+						})
 					end
 				end
 			end
@@ -518,7 +517,6 @@ task.spawn(function()
 	end
 end)
 
--- ===================== ESP =====================
 task.spawn(function()
 	while alive() do
 		clearTags()
@@ -557,7 +555,6 @@ task.spawn(function()
 				elseif F.EspPlatforms and isPlatform(inst) then
 					tagPlatform(inst)
 				elseif F.EspCode and inst:IsA("BasePart") then
-					-- photo code pillars / number boards
 					local n = string.lower(inst.Name .. " " .. (inst.Parent and inst.Parent.Name or ""))
 					if n:find("code", 1, true) or n:find("pillar", 1, true) or n:find("number", 1, true) or n:find("photo", 1, true) then
 						tagModel(inst, Color3.fromRGB(180, 100, 255))
@@ -569,7 +566,6 @@ task.spawn(function()
 	end
 end)
 
--- Visuals
 task.spawn(function()
 	while alive() do
 		if F.FullBright then
@@ -586,167 +582,189 @@ task.spawn(function()
 			end)
 		end
 		if F.CameraMode then
-			pcall(function()
-				local hum = getHum()
-				if hum then
-					hum.CameraOffset = Vector3.new(0, 1.5, 8)
-				end
-			end)
+			local hum = getHum()
+			if hum then hum.CameraOffset = Vector3.new(0, 1.5, 8) end
 		end
 		task.wait(0.5)
 	end
 end)
 
--- ===================== UI =====================
-local Window = Zeta:CreateWindow({
-	Title = "Constipated Hub",
-	SubTitle = "DON'T SPLASH · Nauru feature pack",
-	Theme = "Dark",
+-- ===================== ORION UI =====================
+local Window = OrionLib:MakeWindow({
+	Name = "Constipated Hub | DON'T SPLASH",
+	HidePremium = true,
+	SaveConfig = false,
+	ConfigFolder = "ConstipatedDS",
+	IntroEnabled = true,
+	IntroText = "Constipated Hub",
 })
 
-local TabMain = Window:AddTab({ Title = "Main", Icon = "home" })
-local TabTools = Window:AddTab({ Title = "Tools", Icon = "wrench" })
-local TabESP = Window:AddTab({ Title = "ESP", Icon = "eye" })
-local TabVis = Window:AddTab({ Title = "Visuals", Icon = "sun" })
-local TabMisc = Window:AddTab({ Title = "Misc", Icon = "settings" })
+local TabMain = Window:MakeTab({ Name = "Main", Icon = "rbxassetid://4483345998", PremiumOnly = false })
+local TabTools = Window:MakeTab({ Name = "Tools", Icon = "rbxassetid://4483345998", PremiumOnly = false })
+local TabESP = Window:MakeTab({ Name = "ESP", Icon = "rbxassetid://4483345998", PremiumOnly = false })
+local TabVis = Window:MakeTab({ Name = "Visuals", Icon = "rbxassetid://4483345998", PremiumOnly = false })
+local TabMisc = Window:MakeTab({ Name = "Misc", Icon = "rbxassetid://4483345998", PremiumOnly = false })
 
--- MAIN
-local SecSurv = TabMain:AddSection("Survival (Nauru)")
-SecSurv:AddToggle("WaterPlatform", {
-	Title = "Water Platform / Anti Splash",
-	Description = "Invisible pad under you — walk water without splash aggro",
+TabMain:AddSection({ Name = "Survival" })
+TabMain:AddToggle({
+	Name = "Water Platform / Anti Splash",
 	Default = false,
 	Callback = function(v) F.WaterPlatform = v end,
 })
-SecSurv:AddToggle("AntiSlowWater", {
-	Title = "Anti Slow In Water",
+TabMain:AddToggle({
+	Name = "Anti Slow In Water",
 	Default = false,
 	Callback = function(v) F.AntiSlowWater = v end,
 })
-SecSurv:AddToggle("AutoBleedOut", {
-	Title = "Auto Bleed Out",
-	Description = "Fires bleed/give-up when stuck",
+TabMain:AddToggle({
+	Name = "Auto Bleed Out",
 	Default = false,
 	Callback = function(v) F.AutoBleedOut = v end,
 })
-SecSurv:AddToggle("AutoAskHelp", {
-	Title = "Auto Ask For Help",
+TabMain:AddToggle({
+	Name = "Auto Ask For Help",
 	Default = false,
 	Callback = function(v) F.AutoAskHelp = v end,
 })
-SecSurv:AddToggle("AutoPull", {
-	Title = "Auto Pull Teammates",
-	Description = "Rope/rescue prompts + remotes near downed players",
+TabMain:AddToggle({
+	Name = "Auto Self Rescue",
+	Default = false,
+	Callback = function(v) F.AutoSelfRescue = v end,
+})
+TabMain:AddToggle({
+	Name = "Auto Pull / Friend Revive",
 	Default = false,
 	Callback = function(v) F.AutoPull = v end,
 })
-SecSurv:AddToggle("AutoSprint", {
-	Title = "Auto Sprint Cap (~22)",
+TabMain:AddToggle({
+	Name = "Auto Sprint Cap (~22)",
 	Default = false,
 	Callback = function(v) F.AutoSprint = v end,
 })
 
--- TOOLS
-local SecFlare = TabTools:AddSection("Flare")
-SecFlare:AddToggle("FlareAimbot", {
-	Title = "Flare Aimbot",
-	Description = "Aims camera at creature (water-level)",
+TabMain:AddSection({ Name = "One-shots" })
+TabMain:AddButton({
+	Name = "Bleed Out Now",
+	Callback = function()
+		fire(Remotes.BleedOut)
+		OrionLib:MakeNotification({ Name = "BleedOut", Content = "Fired", Time = 2 })
+	end,
+})
+TabMain:AddButton({
+	Name = "Ask Help Now",
+	Callback = function()
+		fire(Remotes.AskForHelp)
+		OrionLib:MakeNotification({ Name = "AskForHelp", Content = "Fired", Time = 2 })
+	end,
+})
+TabMain:AddButton({
+	Name = "Self Rescue Now",
+	Callback = function()
+		fire(Remotes.SelfRescue)
+		OrionLib:MakeNotification({ Name = "SelfRescue", Content = "Fired", Time = 2 })
+	end,
+})
+
+TabTools:AddSection({ Name = "Flare" })
+TabTools:AddToggle({
+	Name = "Flare Aimbot",
 	Default = false,
 	Callback = function(v) F.FlareAimbot = v end,
 })
-SecFlare:AddToggle("AutoThrowFlare", {
-	Title = "Auto Throw Flare",
+TabTools:AddToggle({
+	Name = "Auto Throw Flare",
 	Default = false,
 	Callback = function(v) F.AutoThrowFlare = v end,
 })
-SecFlare:AddToggle("AimDown", {
-	Title = "Aim Down (water)",
+TabTools:AddToggle({
+	Name = "Aim Down (water)",
 	Default = true,
 	Callback = function(v) F.AimDown = v end,
 })
-SecFlare:AddSlider("FlareRange", {
-	Title = "Max Range",
-	Min = 20, Max = 200, Default = 120, Rounding = 0,
+TabTools:AddSlider({
+	Name = "Max Range",
+	Min = 20,
+	Max = 200,
+	Default = 120,
+	Increment = 5,
 	Callback = function(v) F.FlareMaxRange = v end,
 })
-SecFlare:AddSlider("FlareSmooth", {
-	Title = "Smoothing",
-	Min = 0, Max = 0.9, Default = 0.35, Increment = 0.05,
-	Callback = function(v) F.FlareSmooth = v end,
+TabTools:AddSlider({
+	Name = "Smoothing",
+	Min = 0,
+	Max = 90,
+	Default = 35,
+	Increment = 5,
+	Callback = function(v) F.FlareSmooth = v / 100 end,
 })
 
-local SecPeb = TabTools:AddSection("Items")
-SecPeb:AddToggle("GetPebbles", {
-	Title = "Get Nearest Pebbles",
-	Description = "TP-touch nearest pebble cluster",
+TabTools:AddSection({ Name = "Items" })
+TabTools:AddToggle({
+	Name = "Get Nearest Pebbles",
 	Default = false,
 	Callback = function(v) F.GetNearestPebbles = v end,
 })
-SecPeb:AddToggle("EquipBest", {
-	Title = "Equip Best Item",
-	Description = "Flare → Rope → Bottle → Pebble",
+TabTools:AddToggle({
+	Name = "Equip Best Item",
 	Default = false,
 	Callback = function(v) F.EquipBest = v end,
 })
-SecPeb:AddToggle("CreatureAlert", {
-	Title = "Creature Proximity Alert",
+TabTools:AddToggle({
+	Name = "Creature Proximity Alert",
 	Default = false,
 	Callback = function(v) F.CreatureAlert = v end,
 })
-SecPeb:AddSlider("AlertRadius", {
-	Title = "Alert Radius",
-	Min = 10, Max = 100, Default = 40, Rounding = 0,
+TabTools:AddSlider({
+	Name = "Alert Radius",
+	Min = 10,
+	Max = 100,
+	Default = 40,
+	Increment = 5,
 	Callback = function(v) F.AlertRadius = v end,
 })
-
-local SecUI = TabTools:AddSection("Menus")
-SecUI:AddButton({
-	Title = "Open Equipment UI",
+TabTools:AddButton({
+	Name = "Use Item (remote)",
 	Callback = function()
-		for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
-			local n = string.lower(g.Name)
-			if (g:IsA("ScreenGui") or g:IsA("Frame")) and (n:find("equip", 1, true) or n:find("loadout", 1, true)) then
-				pcall(function() g.Enabled = true; if g:IsA("Frame") then g.Visible = true end end)
-			end
-		end
-		Zeta:Notify({ Title = "UI", Content = "Tried to open Equipment", Duration = 2 })
+		fire(Remotes.UseItem)
+		OrionLib:MakeNotification({ Name = "UseItem", Content = "Fired", Time = 2 })
 	end,
 })
-SecUI:AddButton({
-	Title = "Open Shop / Upgrades",
+TabTools:AddButton({
+	Name = "Photo / Code Snap",
 	Callback = function()
-		for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
-			local n = string.lower(g.Name)
-			if (g:IsA("ScreenGui") or g:IsA("Frame")) and (n:find("shop", 1, true) or n:find("upgrade", 1, true) or n:find("store", 1, true)) then
-				pcall(function() g.Enabled = true; if g:IsA("Frame") then g.Visible = true end end)
-			end
-		end
-		Zeta:Notify({ Title = "UI", Content = "Tried to open Shop/Upgrades", Duration = 2 })
+		fire(Remotes.Photo)
+		OrionLib:MakeNotification({ Name = "Photo", Content = "Fired", Time = 2 })
 	end,
 })
 
--- ESP
-local SecEsp = TabESP:AddSection("Overlays")
-SecEsp:AddToggle("EspPlayers", { Title = "Player ESP", Default = false, Callback = function(v) F.EspPlayers = v end })
-SecEsp:AddToggle("EspMonster", { Title = "Creatures ESP", Default = false, Callback = function(v) F.EspMonster = v end })
-SecEsp:AddToggle("EspItems", { Title = "Item ESP", Default = false, Callback = function(v) F.EspItems = v end })
-SecEsp:AddToggle("EspPlatforms", { Title = "Platform ESP", Default = false, Callback = function(v) F.EspPlatforms = v end })
-SecEsp:AddToggle("EspVaults", { Title = "Vault ESP", Default = false, Callback = function(v) F.EspVaults = v end })
-SecEsp:AddToggle("EspCode", { Title = "Code / Pillar ESP", Default = false, Callback = function(v) F.EspCode = v end })
-SecEsp:AddButton({
-	Title = "Reload ESP",
+TabESP:AddSection({ Name = "Overlays" })
+TabESP:AddToggle({ Name = "Player ESP", Default = false, Callback = function(v) F.EspPlayers = v end })
+TabESP:AddToggle({ Name = "Creatures ESP", Default = false, Callback = function(v) F.EspMonster = v end })
+TabESP:AddToggle({ Name = "Item ESP", Default = false, Callback = function(v) F.EspItems = v end })
+TabESP:AddToggle({ Name = "Platform ESP", Default = false, Callback = function(v) F.EspPlatforms = v end })
+TabESP:AddToggle({ Name = "Vault ESP", Default = false, Callback = function(v) F.EspVaults = v end })
+TabESP:AddToggle({ Name = "Code / Pillar ESP", Default = false, Callback = function(v) F.EspCode = v end })
+TabESP:AddButton({
+	Name = "Reload ESP",
 	Callback = function()
 		clearTags()
-		Zeta:Notify({ Title = "ESP", Content = "Cleared — rescan soon", Duration = 2 })
+		OrionLib:MakeNotification({ Name = "ESP", Content = "Cleared — rescan soon", Time = 2 })
 	end,
 })
 
--- VISUALS
-local SecVis = TabVis:AddSection("World")
-SecVis:AddToggle("FullBright", { Title = "Full Bright", Default = false, Callback = function(v) F.FullBright = v end })
-SecVis:AddToggle("NoFog", { Title = "No Fog", Default = false, Callback = function(v) F.NoFog = v end })
-SecVis:AddToggle("CameraMode", {
-	Title = "Camera Mode (3rd person offset)",
+TabVis:AddSection({ Name = "World" })
+TabVis:AddToggle({
+	Name = "Full Bright",
+	Default = false,
+	Callback = function(v) F.FullBright = v end,
+})
+TabVis:AddToggle({
+	Name = "No Fog",
+	Default = false,
+	Callback = function(v) F.NoFog = v end,
+})
+TabVis:AddToggle({
+	Name = "Camera Mode (3rd person)",
 	Default = false,
 	Callback = function(v)
 		F.CameraMode = v
@@ -756,46 +774,59 @@ SecVis:AddToggle("CameraMode", {
 		end
 	end,
 })
-SecVis:AddSlider("TimerScale", {
-	Title = "Timer Size (UI scale attempt)",
-	Min = 0.5, Max = 2, Default = 1, Increment = 0.1,
-	Callback = function(v)
-		F.TimerScale = v
-		for _, g in ipairs(LP.PlayerGui:GetDescendants()) do
-			local n = string.lower(g.Name)
-			if g:IsA("TextLabel") and (n:find("timer", 1, true) or n:find("time", 1, true)) then
-				pcall(function() g.TextSize = math.floor(14 * v) end)
-			end
-		end
-	end,
-})
 
--- MISC
-local SecMisc = TabMisc:AddSection("Hub")
-SecMisc:AddButton({
-	Title = "Return To Lobby",
+TabMisc:AddSection({ Name = "Lobby / Run" })
+TabMisc:AddButton({
+	Name = "Return To Lobby",
 	Callback = function()
-		pcall(function()
-			TeleportService:Teleport(game.PlaceId, LP)
-		end)
-		tryRemote({ "lobby", "returnlobby", "leaverun", "menu" })
+		fire(Remotes.ReturnToLobby)
+		pcall(function() TeleportService:Teleport(game.PlaceId, LP) end)
 	end,
 })
-SecMisc:AddButton({
-	Title = "Unload Hub",
+TabMisc:AddButton({
+	Name = "Play Again",
+	Callback = function()
+		fire(Remotes.PlayAgain)
+	end,
+})
+TabMisc:AddButton({
+	Name = "Open Panel (lobby)",
+	Callback = function()
+		fire(Remotes.OpenPanel)
+	end,
+})
+TabMisc:AddButton({
+	Name = "Refresh Remotes",
+	Callback = function()
+		refreshRemotes()
+		local found = 0
+		for k, v in pairs(Remotes) do
+			if v then found += 1 end
+		end
+		OrionLib:MakeNotification({
+			Name = "Remotes",
+			Content = found .. " bound (StillWater)",
+			Time = 3,
+		})
+	end,
+})
+TabMisc:AddButton({
+	Name = "Unload Hub",
 	Callback = function()
 		GENV.__ConstipatedDS = GEN + 1
 		clearTags()
 		if marksFolder then marksFolder:Destroy() end
 		local hum = getHum()
 		if hum then hum.CameraOffset = Vector3.zero end
-		pcall(function() Zeta:Unload() end)
+		OrionLib:Destroy()
 	end,
 })
 
-Zeta:Notify({
-	Title = "Constipated Hub",
-	Content = "DON'T SPLASH · Nauru feature pack loaded",
-	Duration = 4,
+OrionLib:MakeNotification({
+	Name = "Constipated Hub",
+	Content = "DON'T SPLASH loaded · Orion + StillWater remotes",
+	Image = "rbxassetid://4483345998",
+	Time = 5,
 })
-print("[Constipated Hub] DON'T SPLASH | Nauru features + Brandon ESP | ZetaPro")
+
+print("[Constipated Hub] DON'T SPLASH | Orion | StillWater remotes")
