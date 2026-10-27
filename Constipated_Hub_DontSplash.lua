@@ -307,32 +307,151 @@ local function firePrompt(prompt)
 	end)
 end
 
--- ===================== LOOPS =====================
-local ghostPart
-local function ensureGhost()
-	if ghostPart and ghostPart.Parent then return ghostPart end
-	ghostPart = Instance.new("Part")
-	ghostPart.Name = "ConstipatedWaterPad"
-	ghostPart.Size = Vector3.new(8, 1, 8)
-	ghostPart.Anchored = true
-	ghostPart.CanCollide = true
-	ghostPart.Transparency = 1
-	ghostPart.Material = Enum.Material.SmoothPlastic
-	ghostPart.Parent = marksFolder
-	return ghostPart
+-- ===================== WATER PLATFORM (on water surface, not fly) =====================
+-- Builds invisible collision pads ON TOP of water zones so you walk across water
+-- without touching it (no splash). Also a small follower pad under feet as backup.
+
+local waterPads = {} -- [waterPart] = padPart
+local footPad = nil
+local lastWaterScan = 0
+
+local function isWaterPart(inst)
+	if not inst:IsA("BasePart") then return false end
+	if LP.Character and inst:IsDescendantOf(LP.Character) then return false end
+	local n = string.lower(inst.Name)
+	if n:find("water", 1, true) or n:find("pool", 1, true) or n:find("liquid", 1, true)
+		or n:find("flood", 1, true) or n:find("stillwater", 1, true) then
+		return true
+	end
+	-- Terrain material proxy parts sometimes named differently
+	if inst.Material == Enum.Material.Water then return true end
+	-- large thin flat blue-ish parts common as pool surfaces
+	if inst.Size.Y <= 4 and inst.Size.X >= 8 and inst.Size.Z >= 8 then
+		local c = inst.Color
+		if c.B > 0.45 and c.B > c.R and c.B > c.G then
+			return true
+		end
+	end
+	return false
+end
+
+local function ensurePadFor(water)
+	local pad = waterPads[water]
+	if pad and pad.Parent then return pad end
+	pad = Instance.new("Part")
+	pad.Name = "ConstipatedWaterSurface"
+	pad.Anchored = true
+	pad.CanCollide = true
+	pad.CanQuery = false
+	pad.CanTouch = false -- avoid touch splash triggers if any
+	pad.Transparency = 1
+	pad.Material = Enum.Material.SmoothPlastic
+	pad.Size = Vector3.new(
+		math.max(water.Size.X, 4) + 0.5,
+		1,
+		math.max(water.Size.Z, 4) + 0.5
+	)
+	-- sit slightly ABOVE water top surface
+	local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
+	pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z) * (water.CFrame - water.CFrame.Position)
+	pad.Parent = marksFolder
+	waterPads[water] = pad
+	return pad
+end
+
+local function ensureFootPad()
+	if footPad and footPad.Parent then return footPad end
+	footPad = Instance.new("Part")
+	footPad.Name = "ConstipatedFootPad"
+	footPad.Size = Vector3.new(6, 1, 6)
+	footPad.Anchored = true
+	footPad.CanCollide = true
+	footPad.CanTouch = false
+	footPad.CanQuery = false
+	footPad.Transparency = 1
+	footPad.Material = Enum.Material.SmoothPlastic
+	footPad.Parent = marksFolder
+	return footPad
+end
+
+local function clearWaterPads()
+	for _, pad in pairs(waterPads) do
+		pcall(function() pad:Destroy() end)
+	end
+	table.clear(waterPads)
+	if footPad then
+		footPad.CanCollide = false
+	end
+end
+
+local function scanWaterZones()
+	local found = {}
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		if isWaterPart(inst) then
+			found[inst] = true
+			ensurePadFor(inst)
+		end
+	end
+	-- cleanup pads for removed water
+	for water, pad in pairs(waterPads) do
+		if not found[water] or not water.Parent then
+			pcall(function() pad:Destroy() end)
+			waterPads[water] = nil
+		end
+	end
 end
 
 task.spawn(function()
 	while alive() do
 		if F.WaterPlatform then
-			local hrp = getHRP()
-			local g = ensureGhost()
-			if hrp then
-				g.CFrame = CFrame.new(hrp.Position.X, hrp.Position.Y - 3.35, hrp.Position.Z)
-				g.CanCollide = true
+			if os.clock() - lastWaterScan > 2 then
+				lastWaterScan = os.clock()
+				pcall(scanWaterZones)
 			end
-		elseif ghostPart then
-			ghostPart.CanCollide = false
+			-- keep pad sizes/positions synced if water moves/sinks
+			for water, pad in pairs(waterPads) do
+				if water and water.Parent and pad and pad.Parent then
+					local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
+					pad.Size = Vector3.new(
+						math.max(water.Size.X, 4) + 0.5,
+						1,
+						math.max(water.Size.Z, 4) + 0.5
+					)
+					pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z)
+					pad.CanCollide = true
+				end
+			end
+			-- follower pad: only when over water-ish height (near lowest pad)
+			local hrp = getHRP()
+			if hrp then
+				local fp = ensureFootPad()
+				local bestY = nil
+				for _, pad in pairs(waterPads) do
+					if pad and pad.Parent then
+						local d = (Vector3.new(pad.Position.X, 0, pad.Position.Z) - Vector3.new(hrp.Position.X, 0, hrp.Position.Z)).Magnitude
+						if d < math.max(pad.Size.X, pad.Size.Z) * 0.6 then
+							bestY = pad.Position.Y
+							break
+						end
+					end
+				end
+				if bestY then
+					fp.CFrame = CFrame.new(hrp.Position.X, bestY, hrp.Position.Z)
+					fp.CanCollide = true
+				else
+					-- still place slightly under feet if no zone matched (ray down)
+					local origin = hrp.Position + Vector3.new(0, 2, 0)
+					local ray = Workspace:Raycast(origin, Vector3.new(0, -80, 0))
+					local y = hrp.Position.Y - 3.2
+					if ray then
+						y = ray.Position.Y + 0.6
+					end
+					fp.CFrame = CFrame.new(hrp.Position.X, y, hrp.Position.Z)
+					fp.CanCollide = true
+				end
+			end
+		else
+			clearWaterPads()
 		end
 		RunService.Heartbeat:Wait()
 	end
@@ -607,10 +726,14 @@ local TabMisc = Window:MakeTab({ Name = "Misc", Icon = "rbxassetid://4483345998"
 
 TabMain:AddSection({ Name = "Survival" })
 TabMain:AddToggle({
-	Name = "Water Platform / Anti Splash",
+	Name = "Water Platform (pads ON water)",
 	Default = false,
-	Callback = function(v) F.WaterPlatform = v end,
+	Callback = function(v)
+		F.WaterPlatform = v
+		if not v then pcall(clearWaterPads) end
+	end,
 })
+TabMain:AddLabel("Places invisible collision on water surfaces so you walk without splash")
 TabMain:AddToggle({
 	Name = "Anti Slow In Water",
 	Default = false,
@@ -814,7 +937,9 @@ TabMisc:AddButton({
 	Name = "Unload Hub",
 	Callback = function()
 		GENV.__ConstipatedDS = GEN + 1
+		F.WaterPlatform = false
 		clearTags()
+		pcall(clearWaterPads)
 		if marksFolder then marksFolder:Destroy() end
 		local hum = getHum()
 		if hum then hum.CameraOffset = Vector3.zero end
