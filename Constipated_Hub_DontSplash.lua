@@ -102,12 +102,17 @@ end
 -- ===================== FLAGS =====================
 local F = {
 	WaterPlatform = false,
+	ShowWaterPads = true,
+	RemoveWater = false,
+	CFrameHoldWater = true,
 	AntiSlowWater = false,
 	AutoBleedOut = false,
 	AutoAskHelp = false,
 	AutoSelfRescue = false,
 	AutoPull = false,
 	AutoSprint = false,
+	CFrameFly = false,
+	FlySpeed = 50,
 	FlareAimbot = false,
 	AutoThrowFlare = false,
 	GetNearestPebbles = false,
@@ -307,25 +312,23 @@ local function firePrompt(prompt)
 	end)
 end
 
--- ===================== WATER PLATFORM (on water surface, not fly) =====================
--- Builds invisible collision pads ON TOP of water zones so you walk across water
--- without touching it (no splash). Also a small follower pad under feet as backup.
-
-local waterPads = {} -- [waterPart] = padPart
-local footPad = nil
+-- ===================== WATER PLATFORM + REMOVE WATER + CFRAME HOLD =====================
+local waterPads = {} -- [waterPart] = {pad=, hl=, baseY=}
+local removedWater = {}
 local lastWaterScan = 0
+local lockedWaterY = nil
 
 local function isWaterPart(inst)
-	if not inst:IsA("BasePart") then return false end
+	if not inst or not inst:IsA("BasePart") then return false end
+	if inst.Name == "ConstipatedWaterSurface" or inst.Name == "ConstipatedFootPad" then return false end
 	if LP.Character and inst:IsDescendantOf(LP.Character) then return false end
+	if marksFolder and inst:IsDescendantOf(marksFolder) then return false end
 	local n = string.lower(inst.Name)
 	if n:find("water", 1, true) or n:find("pool", 1, true) or n:find("liquid", 1, true)
 		or n:find("flood", 1, true) or n:find("stillwater", 1, true) then
 		return true
 	end
-	-- Terrain material proxy parts sometimes named differently
 	if inst.Material == Enum.Material.Water then return true end
-	-- large thin flat blue-ish parts common as pool surfaces
 	if inst.Size.Y <= 4 and inst.Size.X >= 8 and inst.Size.Z >= 8 then
 		local c = inst.Color
 		if c.B > 0.45 and c.B > c.R and c.B > c.G then
@@ -335,53 +338,60 @@ local function isWaterPart(inst)
 	return false
 end
 
+local function setPadVisual(pad, hl)
+	if not pad then return end
+	if F.ShowWaterPads then
+		pad.Transparency = 0.45
+		pad.Color = Color3.fromRGB(80, 200, 255)
+		pad.Material = Enum.Material.ForceField
+		if hl then hl.Enabled = true end
+	else
+		pad.Transparency = 1
+		pad.Material = Enum.Material.SmoothPlastic
+		if hl then hl.Enabled = false end
+	end
+end
+
 local function ensurePadFor(water)
-	local pad = waterPads[water]
-	if pad and pad.Parent then return pad end
-	pad = Instance.new("Part")
+	local entry = waterPads[water]
+	if entry and entry.pad and entry.pad.Parent then
+		setPadVisual(entry.pad, entry.hl)
+		return entry.pad
+	end
+	local pad = Instance.new("Part")
 	pad.Name = "ConstipatedWaterSurface"
 	pad.Anchored = true
 	pad.CanCollide = true
 	pad.CanQuery = false
-	pad.CanTouch = false -- avoid touch splash triggers if any
-	pad.Transparency = 1
-	pad.Material = Enum.Material.SmoothPlastic
-	pad.Size = Vector3.new(
-		math.max(water.Size.X, 4) + 0.5,
-		1,
-		math.max(water.Size.Z, 4) + 0.5
-	)
-	-- sit slightly ABOVE water top surface
-	local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
-	pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z) * (water.CFrame - water.CFrame.Position)
+	pad.CanTouch = false
+	pad.Size = Vector3.new(math.max(water.Size.X, 4) + 1, 0.6, math.max(water.Size.Z, 4) + 1)
+	local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.35
+	pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z)
 	pad.Parent = marksFolder
-	waterPads[water] = pad
+
+	local hl = Instance.new("Highlight")
+	hl.Name = "PadHL"
+	hl.Adornee = pad
+	hl.FillColor = Color3.fromRGB(60, 180, 255)
+	hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+	hl.FillTransparency = 0.55
+	hl.OutlineTransparency = 0.2
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = pad
+
+	setPadVisual(pad, hl)
+	waterPads[water] = { pad = pad, hl = hl, baseY = topY }
 	return pad
 end
 
-local function ensureFootPad()
-	if footPad and footPad.Parent then return footPad end
-	footPad = Instance.new("Part")
-	footPad.Name = "ConstipatedFootPad"
-	footPad.Size = Vector3.new(6, 1, 6)
-	footPad.Anchored = true
-	footPad.CanCollide = true
-	footPad.CanTouch = false
-	footPad.CanQuery = false
-	footPad.Transparency = 1
-	footPad.Material = Enum.Material.SmoothPlastic
-	footPad.Parent = marksFolder
-	return footPad
-end
-
 local function clearWaterPads()
-	for _, pad in pairs(waterPads) do
-		pcall(function() pad:Destroy() end)
+	for _, entry in pairs(waterPads) do
+		pcall(function()
+			if entry.pad then entry.pad:Destroy() end
+		end)
 	end
 	table.clear(waterPads)
-	if footPad then
-		footPad.CanCollide = false
-	end
+	lockedWaterY = nil
 end
 
 local function scanWaterZones()
@@ -389,71 +399,192 @@ local function scanWaterZones()
 	for _, inst in ipairs(Workspace:GetDescendants()) do
 		if isWaterPart(inst) then
 			found[inst] = true
-			ensurePadFor(inst)
+			if F.WaterPlatform then
+				ensurePadFor(inst)
+			end
 		end
 	end
-	-- cleanup pads for removed water
-	for water, pad in pairs(waterPads) do
+	for water, entry in pairs(waterPads) do
 		if not found[water] or not water.Parent then
-			pcall(function() pad:Destroy() end)
+			pcall(function() if entry.pad then entry.pad:Destroy() end end)
 			waterPads[water] = nil
 		end
 	end
 end
 
+local function applyRemoveWater(on)
+	if on then
+		for _, inst in ipairs(Workspace:GetDescendants()) do
+			if isWaterPart(inst) and not removedWater[inst] then
+				removedWater[inst] = {
+					Transparency = inst.Transparency,
+					CanCollide = inst.CanCollide,
+					CanTouch = inst.CanTouch,
+					Material = inst.Material,
+				}
+				pcall(function()
+					inst.Transparency = 1
+					inst.CanCollide = false
+					inst.CanTouch = false
+				end)
+			end
+		end
+		pcall(function()
+			local hrp = getHRP()
+			if hrp and Workspace.Terrain then
+				local p = hrp.Position
+				local region = Region3.new(
+					Vector3.new(p.X - 250, p.Y - 100, p.Z - 250),
+					Vector3.new(p.X + 250, p.Y + 50, p.Z + 250)
+				):ExpandToGrid(4)
+				Workspace.Terrain:ReplaceMaterial(region, 4, Enum.Material.Water, Enum.Material.Air)
+			end
+		end)
+	else
+		for inst, props in pairs(removedWater) do
+			if inst and inst.Parent then
+				pcall(function()
+					inst.Transparency = props.Transparency
+					inst.CanCollide = props.CanCollide
+					inst.CanTouch = props.CanTouch
+					inst.Material = props.Material
+				end)
+			end
+		end
+		table.clear(removedWater)
+	end
+end
+
+local function getStandYOverWater(hrp)
+	local bestY, bestDist = nil, 1e9
+	local px, pz = hrp.Position.X, hrp.Position.Z
+	for _, entry in pairs(waterPads) do
+		local pad = entry.pad
+		if pad and pad.Parent then
+			local halfX = pad.Size.X * 0.5
+			local halfZ = pad.Size.Z * 0.5
+			local dx = math.abs(pad.Position.X - px)
+			local dz = math.abs(pad.Position.Z - pz)
+			if dx <= halfX and dz <= halfZ then
+				local d = dx + dz
+				if d < bestDist then
+					bestDist = d
+					bestY = pad.Position.Y + (pad.Size.Y * 0.5) + 3.0
+				end
+			end
+		end
+	end
+	return bestY
+end
+
 task.spawn(function()
 	while alive() do
 		if F.WaterPlatform then
-			if os.clock() - lastWaterScan > 2 then
+			if os.clock() - lastWaterScan > 2.5 then
 				lastWaterScan = os.clock()
 				pcall(scanWaterZones)
 			end
-			-- keep pad sizes/positions synced if water moves/sinks
-			for water, pad in pairs(waterPads) do
+			for water, entry in pairs(waterPads) do
+				local pad = entry.pad
 				if water and water.Parent and pad and pad.Parent then
-					local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
-					pad.Size = Vector3.new(
-						math.max(water.Size.X, 4) + 0.5,
-						1,
-						math.max(water.Size.Z, 4) + 0.5
-					)
+					local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.35
+					pad.Size = Vector3.new(math.max(water.Size.X, 4) + 1, 0.6, math.max(water.Size.Z, 4) + 1)
 					pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z)
 					pad.CanCollide = true
+					entry.baseY = topY
+					setPadVisual(pad, entry.hl)
 				end
 			end
-			-- follower pad: only when over water-ish height (near lowest pad)
-			local hrp = getHRP()
-			if hrp then
-				local fp = ensureFootPad()
-				local bestY = nil
-				for _, pad in pairs(waterPads) do
-					if pad and pad.Parent then
-						local d = (Vector3.new(pad.Position.X, 0, pad.Position.Z) - Vector3.new(hrp.Position.X, 0, hrp.Position.Z)).Magnitude
-						if d < math.max(pad.Size.X, pad.Size.Z) * 0.6 then
-							bestY = pad.Position.Y
-							break
+			if F.CFrameHoldWater and not F.CFrameFly then
+				local hrp = getHRP()
+				local hum = getHum()
+				if hrp and hum and hum.Health > 0 then
+					local standY = getStandYOverWater(hrp)
+					if standY then
+						lockedWaterY = standY
+						local pos = hrp.Position
+						if pos.Y < standY - 0.15 or pos.Y > standY + 2.5 then
+							hrp.CFrame = CFrame.new(pos.X, standY, pos.Z) * (hrp.CFrame - hrp.CFrame.Position)
 						end
+						local v = hrp.AssemblyLinearVelocity
+						if math.abs(v.Y) > 0.5 then
+							hrp.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
+						end
+					else
+						lockedWaterY = nil
 					end
-				end
-				if bestY then
-					fp.CFrame = CFrame.new(hrp.Position.X, bestY, hrp.Position.Z)
-					fp.CanCollide = true
-				else
-					-- still place slightly under feet if no zone matched (ray down)
-					local origin = hrp.Position + Vector3.new(0, 2, 0)
-					local ray = Workspace:Raycast(origin, Vector3.new(0, -80, 0))
-					local y = hrp.Position.Y - 3.2
-					if ray then
-						y = ray.Position.Y + 0.6
-					end
-					fp.CFrame = CFrame.new(hrp.Position.X, y, hrp.Position.Z)
-					fp.CanCollide = true
 				end
 			end
 		else
-			clearWaterPads()
+			if next(waterPads) then clearWaterPads() end
 		end
+
+		if F.RemoveWater then
+			pcall(applyRemoveWater, true)
+		end
+
 		RunService.Heartbeat:Wait()
+	end
+end)
+
+-- ===================== CFRAME FLY (GodFly-style) =====================
+local flyKeys = { W = false, A = false, S = false, D = false, Q = false, E = false, Space = false }
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	local k = input.KeyCode
+	if k == Enum.KeyCode.W then flyKeys.W = true
+	elseif k == Enum.KeyCode.A then flyKeys.A = true
+	elseif k == Enum.KeyCode.S then flyKeys.S = true
+	elseif k == Enum.KeyCode.D then flyKeys.D = true
+	elseif k == Enum.KeyCode.Q then flyKeys.Q = true
+	elseif k == Enum.KeyCode.E then flyKeys.E = true
+	elseif k == Enum.KeyCode.Space then flyKeys.Space = true
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	local k = input.KeyCode
+	if k == Enum.KeyCode.W then flyKeys.W = false
+	elseif k == Enum.KeyCode.A then flyKeys.A = false
+	elseif k == Enum.KeyCode.S then flyKeys.S = false
+	elseif k == Enum.KeyCode.D then flyKeys.D = false
+	elseif k == Enum.KeyCode.Q then flyKeys.Q = false
+	elseif k == Enum.KeyCode.E then flyKeys.E = false
+	elseif k == Enum.KeyCode.Space then flyKeys.Space = false
+	end
+end)
+
+task.spawn(function()
+	while alive() do
+		if F.CFrameFly then
+			local hrp = getHRP()
+			local hum = getHum()
+			if hrp and hum then
+				hum.PlatformStand = true
+				local cam = Workspace.CurrentCamera
+				local look = cam.CFrame.LookVector
+				local right = cam.CFrame.RightVector
+				local dir = Vector3.zero
+				if flyKeys.W then dir = dir + look end
+				if flyKeys.S then dir = dir - look end
+				if flyKeys.A then dir = dir - right end
+				if flyKeys.D then dir = dir + right end
+				if flyKeys.E or flyKeys.Space then dir = dir + Vector3.new(0, 1, 0) end
+				if flyKeys.Q then dir = dir - Vector3.new(0, 1, 0) end
+				local dt = RunService.Heartbeat:Wait()
+				if dir.Magnitude > 0 then
+					dir = dir.Unit
+					local speed = F.FlySpeed or 50
+					local nextPos = hrp.Position + dir * speed * dt
+					hrp.CFrame = CFrame.new(nextPos, nextPos + look)
+				end
+				hrp.AssemblyLinearVelocity = Vector3.zero
+				hrp.AssemblyAngularVelocity = Vector3.zero
+			else
+				RunService.Heartbeat:Wait()
+			end
+		else
+			RunService.Heartbeat:Wait()
+		end
 	end
 end)
 
@@ -733,7 +864,51 @@ TabMain:AddToggle({
 		if not v then pcall(clearWaterPads) end
 	end,
 })
-TabMain:AddLabel("Places invisible collision on water surfaces so you walk without splash")
+TabMain:AddToggle({
+	Name = "Show / Highlight Water Pads",
+	Default = true,
+	Callback = function(v)
+		F.ShowWaterPads = v
+		for _, entry in pairs(waterPads) do
+			if entry.pad then setPadVisual(entry.pad, entry.hl) end
+		end
+	end,
+})
+TabMain:AddToggle({
+	Name = "CFrame Hold on Water (anti yank)",
+	Default = true,
+	Callback = function(v) F.CFrameHoldWater = v end,
+})
+TabMain:AddToggle({
+	Name = "Remove All Water",
+	Default = false,
+	Callback = function(v)
+		F.RemoveWater = v
+		pcall(applyRemoveWater, v)
+	end,
+})
+TabMain:AddLabel("Fixed-height pads + CFrame Y lock. Remove Water hides water parts / terrain water.")
+TabMain:AddSection({ Name = "CFrame Fly (GodFly style)" })
+TabMain:AddToggle({
+	Name = "CFrame Fly",
+	Default = false,
+	Callback = function(v)
+		F.CFrameFly = v
+		local hum = getHum()
+		if hum and not v then
+			hum.PlatformStand = false
+		end
+	end,
+})
+TabMain:AddSlider({
+	Name = "Fly Speed",
+	Min = 10,
+	Max = 150,
+	Default = 50,
+	Increment = 5,
+	Callback = function(v) F.FlySpeed = v end,
+})
+TabMain:AddLabel("WASD move | E / Space up | Q down")
 TabMain:AddToggle({
 	Name = "Anti Slow In Water",
 	Default = false,
@@ -938,11 +1113,17 @@ TabMisc:AddButton({
 	Callback = function()
 		GENV.__ConstipatedDS = GEN + 1
 		F.WaterPlatform = false
+		F.CFrameFly = false
+		F.RemoveWater = false
 		clearTags()
 		pcall(clearWaterPads)
+		pcall(applyRemoveWater, false)
 		if marksFolder then marksFolder:Destroy() end
 		local hum = getHum()
-		if hum then hum.CameraOffset = Vector3.zero end
+		if hum then
+			hum.CameraOffset = Vector3.zero
+			hum.PlatformStand = false
+		end
 		OrionLib:Destroy()
 	end,
 })
