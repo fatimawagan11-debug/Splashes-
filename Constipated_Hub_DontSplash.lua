@@ -104,7 +104,7 @@ local F = {
 	WaterPlatform = false,
 	ShowWaterPads = true,
 	RemoveWater = false,
-	CFrameHoldWater = true,
+	BlockSplash = true,
 	AntiSlowWater = false,
 	AutoBleedOut = false,
 	AutoAskHelp = false,
@@ -113,6 +113,9 @@ local F = {
 	AutoSprint = false,
 	CFrameFly = false,
 	FlySpeed = 50,
+	AutoFarm = false,
+	FarmSpeed = 60,
+	FarmWait = 1.0,
 	FlareAimbot = false,
 	AutoThrowFlare = false,
 	GetNearestPebbles = false,
@@ -312,15 +315,14 @@ local function firePrompt(prompt)
 	end)
 end
 
--- ===================== WATER PLATFORM + REMOVE WATER + CFRAME HOLD =====================
-local waterPads = {} -- [waterPart] = {pad=, hl=, baseY=}
+-- ===================== WATER PADS (water-only, +0.55) + SPLASH BLOCK + AUTOFARM =====================
+local waterPads = {} -- [waterPart] = {pad=, hl=}
 local removedWater = {}
 local lastWaterScan = 0
-local lockedWaterY = nil
 
 local function isWaterPart(inst)
 	if not inst or not inst:IsA("BasePart") then return false end
-	if inst.Name == "ConstipatedWaterSurface" or inst.Name == "ConstipatedFootPad" then return false end
+	if inst.Name == "ConstipatedWaterSurface" then return false end
 	if LP.Character and inst:IsDescendantOf(LP.Character) then return false end
 	if marksFolder and inst:IsDescendantOf(marksFolder) then return false end
 	local n = string.lower(inst.Name)
@@ -329,9 +331,10 @@ local function isWaterPart(inst)
 		return true
 	end
 	if inst.Material == Enum.Material.Water then return true end
-	if inst.Size.Y <= 4 and inst.Size.X >= 8 and inst.Size.Z >= 8 then
+	-- large thin blue pool surfaces only
+	if inst.Size.Y <= 3.5 and inst.Size.X >= 10 and inst.Size.Z >= 10 then
 		local c = inst.Color
-		if c.B > 0.45 and c.B > c.R and c.B > c.G then
+		if c.B > 0.5 and c.B > c.R + 0.05 and c.B > c.G + 0.05 then
 			return true
 		end
 	end
@@ -341,8 +344,8 @@ end
 local function setPadVisual(pad, hl)
 	if not pad then return end
 	if F.ShowWaterPads then
-		pad.Transparency = 0.45
-		pad.Color = Color3.fromRGB(80, 200, 255)
+		pad.Transparency = 0.4
+		pad.Color = Color3.fromRGB(70, 190, 255)
 		pad.Material = Enum.Material.ForceField
 		if hl then hl.Enabled = true end
 	else
@@ -364,34 +367,35 @@ local function ensurePadFor(water)
 	pad.CanCollide = true
 	pad.CanQuery = false
 	pad.CanTouch = false
-	pad.Size = Vector3.new(math.max(water.Size.X, 4) + 1, 0.6, math.max(water.Size.Z, 4) + 1)
-	local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.35
+	pad.CastShadow = false
+	-- slightly smaller than water so it never covers land edges
+	local sx = math.max(water.Size.X - 1.5, 4)
+	local sz = math.max(water.Size.Z - 1.5, 4)
+	pad.Size = Vector3.new(sx, 0.5, sz)
+	-- FIXED: exactly 0.55 above water top. Does NOT move water.
+	local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
 	pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z)
 	pad.Parent = marksFolder
 
 	local hl = Instance.new("Highlight")
-	hl.Name = "PadHL"
 	hl.Adornee = pad
-	hl.FillColor = Color3.fromRGB(60, 180, 255)
+	hl.FillColor = Color3.fromRGB(50, 170, 255)
 	hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-	hl.FillTransparency = 0.55
-	hl.OutlineTransparency = 0.2
+	hl.FillTransparency = 0.5
+	hl.OutlineTransparency = 0.15
 	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	hl.Parent = pad
 
 	setPadVisual(pad, hl)
-	waterPads[water] = { pad = pad, hl = hl, baseY = topY }
+	waterPads[water] = { pad = pad, hl = hl }
 	return pad
 end
 
 local function clearWaterPads()
 	for _, entry in pairs(waterPads) do
-		pcall(function()
-			if entry.pad then entry.pad:Destroy() end
-		end)
+		pcall(function() if entry.pad then entry.pad:Destroy() end end)
 	end
 	table.clear(waterPads)
-	lockedWaterY = nil
 end
 
 local function scanWaterZones()
@@ -401,6 +405,12 @@ local function scanWaterZones()
 			found[inst] = true
 			if F.WaterPlatform then
 				ensurePadFor(inst)
+			end
+			-- always kill touch so splash remotes don't fire from contact
+			if F.BlockSplash or F.RemoveWater or F.WaterPlatform then
+				pcall(function()
+					inst.CanTouch = false
+				end)
 			end
 		end
 	end
@@ -434,8 +444,8 @@ local function applyRemoveWater(on)
 			if hrp and Workspace.Terrain then
 				local p = hrp.Position
 				local region = Region3.new(
-					Vector3.new(p.X - 250, p.Y - 100, p.Z - 250),
-					Vector3.new(p.X + 250, p.Y + 50, p.Z + 250)
+					Vector3.new(p.X - 300, p.Y - 120, p.Z - 300),
+					Vector3.new(p.X + 300, p.Y + 60, p.Z + 300)
 				):ExpandToGrid(4)
 				Workspace.Terrain:ReplaceMaterial(region, 4, Enum.Material.Water, Enum.Material.Air)
 			end
@@ -455,79 +465,69 @@ local function applyRemoveWater(on)
 	end
 end
 
-local function getStandYOverWater(hrp)
-	local bestY, bestDist = nil, 1e9
-	local px, pz = hrp.Position.X, hrp.Position.Z
-	for _, entry in pairs(waterPads) do
-		local pad = entry.pad
-		if pad and pad.Parent then
-			local halfX = pad.Size.X * 0.5
-			local halfZ = pad.Size.Z * 0.5
-			local dx = math.abs(pad.Position.X - px)
-			local dz = math.abs(pad.Position.Z - pz)
-			if dx <= halfX and dz <= halfZ then
-				local d = dx + dz
-				if d < bestDist then
-					bestDist = d
-					bestY = pad.Position.Y + (pad.Size.Y * 0.5) + 3.0
-				end
-			end
-		end
-	end
-	return bestY
-end
-
+-- Keep pads glued to water tops only (never on land). No player CFrame force.
 task.spawn(function()
 	while alive() do
-		if F.WaterPlatform then
-			if os.clock() - lastWaterScan > 2.5 then
+		if F.WaterPlatform or F.BlockSplash or F.RemoveWater then
+			if os.clock() - lastWaterScan > 2 then
 				lastWaterScan = os.clock()
 				pcall(scanWaterZones)
 			end
+		end
+		if F.WaterPlatform then
 			for water, entry in pairs(waterPads) do
 				local pad = entry.pad
 				if water and water.Parent and pad and pad.Parent then
-					local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.35
-					pad.Size = Vector3.new(math.max(water.Size.X, 4) + 1, 0.6, math.max(water.Size.Z, 4) + 1)
+					local topY = water.Position.Y + (water.Size.Y * 0.5) + 0.55
+					local sx = math.max(water.Size.X - 1.5, 4)
+					local sz = math.max(water.Size.Z - 1.5, 4)
+					pad.Size = Vector3.new(sx, 0.5, sz)
 					pad.CFrame = CFrame.new(water.Position.X, topY, water.Position.Z)
 					pad.CanCollide = true
-					entry.baseY = topY
+					pad.CanTouch = false
 					setPadVisual(pad, entry.hl)
-				end
-			end
-			if F.CFrameHoldWater and not F.CFrameFly then
-				local hrp = getHRP()
-				local hum = getHum()
-				if hrp and hum and hum.Health > 0 then
-					local standY = getStandYOverWater(hrp)
-					if standY then
-						lockedWaterY = standY
-						local pos = hrp.Position
-						if pos.Y < standY - 0.15 or pos.Y > standY + 2.5 then
-							hrp.CFrame = CFrame.new(pos.X, standY, pos.Z) * (hrp.CFrame - hrp.CFrame.Position)
-						end
-						local v = hrp.AssemblyLinearVelocity
-						if math.abs(v.Y) > 0.5 then
-							hrp.AssemblyLinearVelocity = Vector3.new(v.X, 0, v.Z)
-						end
-					else
-						lockedWaterY = nil
-					end
 				end
 			end
 		else
 			if next(waterPads) then clearWaterPads() end
 		end
-
 		if F.RemoveWater then
 			pcall(applyRemoveWater, true)
 		end
-
 		RunService.Heartbeat:Wait()
 	end
 end)
 
--- ===================== CFRAME FLY (GodFly-style) =====================
+-- Soft lift only if feet are BELOW a water pad (sinking) — never push down / stick
+task.spawn(function()
+	while alive() do
+		if F.WaterPlatform and not F.CFrameFly and not F.AutoFarm then
+			local hrp = getHRP()
+			if hrp then
+				local px, py, pz = hrp.Position.X, hrp.Position.Y, hrp.Position.Z
+				for _, entry in pairs(waterPads) do
+					local pad = entry.pad
+					if pad and pad.Parent then
+						local halfX, halfZ = pad.Size.X * 0.5, pad.Size.Z * 0.5
+						if math.abs(pad.Position.X - px) <= halfX and math.abs(pad.Position.Z - pz) <= halfZ then
+							local standY = pad.Position.Y + pad.Size.Y * 0.5 + 2.9
+							-- only lift if sinking under the pad surface
+							if py < standY - 0.4 then
+								hrp.CFrame = CFrame.new(px, standY, pz) * (hrp.CFrame - hrp.CFrame.Position)
+								local v = hrp.AssemblyLinearVelocity
+								hrp.AssemblyLinearVelocity = Vector3.new(v.X, math.max(v.Y, 0), v.Z)
+							end
+							break
+						end
+					end
+				end
+			end
+		end
+		RunService.Heartbeat:Wait()
+	end
+end)
+
+-- ===================== CFRAME FLY =====================
 local flyKeys = { W = false, A = false, S = false, D = false, Q = false, E = false, Space = false }
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
@@ -553,9 +553,23 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
+local function cframeMoveTo(hrp, targetPos, speed)
+	local camLook = Workspace.CurrentCamera.CFrame.LookVector
+	local pos = hrp.Position
+	local delta = targetPos - pos
+	local dist = delta.Magnitude
+	if dist < 1.5 then return true end
+	local step = math.min(dist, speed * 0.03)
+	local nextPos = pos + delta.Unit * step
+	hrp.CFrame = CFrame.new(nextPos, nextPos + Vector3.new(camLook.X, 0, camLook.Z))
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	return false
+end
+
 task.spawn(function()
 	while alive() do
-		if F.CFrameFly then
+		if F.CFrameFly and not F.AutoFarm then
 			local hrp = getHRP()
 			local hum = getHum()
 			if hrp and hum then
@@ -573,8 +587,7 @@ task.spawn(function()
 				local dt = RunService.Heartbeat:Wait()
 				if dir.Magnitude > 0 then
 					dir = dir.Unit
-					local speed = F.FlySpeed or 50
-					local nextPos = hrp.Position + dir * speed * dt
+					local nextPos = hrp.Position + dir * (F.FlySpeed or 50) * dt
 					hrp.CFrame = CFrame.new(nextPos, nextPos + look)
 				end
 				hrp.AssemblyLinearVelocity = Vector3.zero
@@ -584,6 +597,118 @@ task.spawn(function()
 			end
 		else
 			RunService.Heartbeat:Wait()
+		end
+	end
+end)
+
+-- ===================== AUTO FARM (CFrame to exit → wait → again) =====================
+local function findExitTarget()
+	local best, bestScore = nil, -1e9
+	local hrp = getHRP()
+	if not hrp then return nil end
+	local words = { "exit", "door", "locked", "finish", "endgate", "escape", "vault", "goal", "win" }
+	for _, inst in ipairs(Workspace:GetDescendants()) do
+		if inst:IsA("BasePart") or inst:IsA("Model") then
+			local n = string.lower(inst.Name)
+			local hit = false
+			for _, w in ipairs(words) do
+				if n:find(w, 1, true) then hit = true break end
+			end
+			-- also proximity prompts that look like exit
+			if not hit and inst:IsA("BasePart") then
+				for _, ch in ipairs(inst:GetChildren()) do
+					if ch:IsA("ProximityPrompt") then
+						local a = string.lower(ch.ActionText or "")
+						local o = string.lower(ch.ObjectText or "")
+						if a:find("exit") or a:find("escape") or a:find("leave")
+							or o:find("exit") or o:find("door") then
+							hit = true
+						end
+					end
+				end
+			end
+			if hit then
+				local part = inst:IsA("BasePart") and inst or inst:FindFirstChildWhichIsA("BasePart", true)
+				if part and not (LP.Character and part:IsDescendantOf(LP.Character)) then
+					local dist = (part.Position - hrp.Position).Magnitude
+					-- prefer farther exits that are still reachable-ish
+					local score = dist
+					if n:find("exit") or n:find("escape") then score = score + 200 end
+					if n:find("locked") then score = score + 150 end
+					if score > bestScore and dist > 5 then
+						bestScore = score
+						best = part
+					end
+				end
+			end
+		end
+	end
+	-- fallback: highest-numbered / furthest platform-looking part
+	if not best then
+		for _, inst in ipairs(Workspace:GetDescendants()) do
+			if inst:IsA("BasePart") and isPlatform and isPlatform(inst) then
+				local dist = (inst.Position - hrp.Position).Magnitude
+				if dist > bestScore then
+					bestScore = dist
+					best = inst
+				end
+			end
+		end
+	end
+	return best
+end
+
+task.spawn(function()
+	while alive() do
+		if F.AutoFarm then
+			local hrp = getHRP()
+			local hum = getHum()
+			if hrp and hum and hum.Health > 0 then
+				hum.PlatformStand = true
+				local target = findExitTarget()
+				if target then
+					local reached = false
+					local t0 = os.clock()
+					while alive() and F.AutoFarm and hrp.Parent and not reached and (os.clock() - t0) < 45 do
+						reached = cframeMoveTo(hrp, target.Position + Vector3.new(0, 3, 0), F.FarmSpeed or 60)
+						-- fire nearby exit prompts
+						for _, ch in ipairs(target:GetDescendants()) do
+							if ch:IsA("ProximityPrompt") and ch.Enabled then
+								pcall(firePrompt, ch)
+							end
+						end
+						if target:IsA("BasePart") then
+							for _, ch in ipairs(target:GetChildren()) do
+								if ch:IsA("ProximityPrompt") and ch.Enabled then
+									pcall(firePrompt, ch)
+								end
+							end
+						end
+						RunService.Heartbeat:Wait()
+						hrp = getHRP()
+						if not hrp then break end
+					end
+					-- humanized wait at end so it doesn't look like pure teleport farm
+					local waitT = tonumber(F.FarmWait) or 1
+					local w0 = os.clock()
+					while alive() and F.AutoFarm and (os.clock() - w0) < waitT do
+						local h = getHRP()
+						if h then
+							h.AssemblyLinearVelocity = Vector3.zero
+						end
+						task.wait(0.1)
+					end
+					-- try complete / replay
+					fire(Remotes.PlayAgain)
+					task.wait(0.5)
+				else
+					task.wait(1)
+				end
+			else
+				task.wait(0.5)
+			end
+		else
+			task.wait(0.25)
 		end
 	end
 end)
@@ -857,7 +982,7 @@ local TabMisc = Window:MakeTab({ Name = "Misc", Icon = "rbxassetid://4483345998"
 
 TabMain:AddSection({ Name = "Survival" })
 TabMain:AddToggle({
-	Name = "Water Platform (pads ON water)",
+	Name = "Water Platform (ONLY on water +0.55)",
 	Default = false,
 	Callback = function(v)
 		F.WaterPlatform = v
@@ -875,9 +1000,9 @@ TabMain:AddToggle({
 	end,
 })
 TabMain:AddToggle({
-	Name = "CFrame Hold on Water (anti yank)",
+	Name = "Block Splash Touch (kill CanTouch)",
 	Default = true,
-	Callback = function(v) F.CFrameHoldWater = v end,
+	Callback = function(v) F.BlockSplash = v end,
 })
 TabMain:AddToggle({
 	Name = "Remove All Water",
@@ -887,15 +1012,15 @@ TabMain:AddToggle({
 		pcall(applyRemoveWater, v)
 	end,
 })
-TabMain:AddLabel("Fixed-height pads + CFrame Y lock. Remove Water hides water parts / terrain water.")
-TabMain:AddSection({ Name = "CFrame Fly (GodFly style)" })
+TabMain:AddLabel("Pads sit 0.55 above water only — no land pads, no push-down.")
+TabMain:AddSection({ Name = "CFrame Fly" })
 TabMain:AddToggle({
 	Name = "CFrame Fly",
 	Default = false,
 	Callback = function(v)
 		F.CFrameFly = v
 		local hum = getHum()
-		if hum and not v then
+		if hum and not v and not F.AutoFarm then
 			hum.PlatformStand = false
 		end
 	end,
@@ -908,7 +1033,36 @@ TabMain:AddSlider({
 	Increment = 5,
 	Callback = function(v) F.FlySpeed = v end,
 })
-TabMain:AddLabel("WASD move | E / Space up | Q down")
+TabMain:AddLabel("WASD | E/Space up | Q down")
+TabMain:AddSection({ Name = "Auto Farm" })
+TabMain:AddToggle({
+	Name = "Auto Farm (CFrame → Exit → wait → again)",
+	Default = false,
+	Callback = function(v)
+		F.AutoFarm = v
+		local hum = getHum()
+		if hum and not v and not F.CFrameFly then
+			hum.PlatformStand = false
+		end
+	end,
+})
+TabMain:AddSlider({
+	Name = "Farm Fly Speed",
+	Min = 20,
+	Max = 150,
+	Default = 60,
+	Increment = 5,
+	Callback = function(v) F.FarmSpeed = v end,
+})
+TabMain:AddSlider({
+	Name = "Wait at End (sec)",
+	Min = 0.5,
+	Max = 5,
+	Default = 1,
+	Increment = 0.5,
+	Callback = function(v) F.FarmWait = v end,
+})
+TabMain:AddLabel("Flies to Exit/Door → waits → PlayAgain. Humanized 1s default.")
 TabMain:AddToggle({
 	Name = "Anti Slow In Water",
 	Default = false,
@@ -1114,6 +1268,7 @@ TabMisc:AddButton({
 		GENV.__ConstipatedDS = GEN + 1
 		F.WaterPlatform = false
 		F.CFrameFly = false
+		F.AutoFarm = false
 		F.RemoveWater = false
 		clearTags()
 		pcall(clearWaterPads)
